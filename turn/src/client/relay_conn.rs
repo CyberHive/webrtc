@@ -65,6 +65,7 @@ pub struct RelayConnInternal<T: 'static + RelayConnObserver + Send + Sync> {
     integrity: MessageIntegrity,
     nonce: Nonce,
     lifetime: Duration,
+    refresh_error: Option<Error>,
 }
 
 /// `RelayConn` is the implementation of the Conn interfaces for UDP Relayed network connections.
@@ -203,6 +204,7 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
             integrity: config.integrity,
             nonce: config.nonce,
             lifetime: config.lifetime,
+            refresh_error: None,
         }
     }
 
@@ -212,6 +214,10 @@ impl<T: RelayConnObserver + Send + Sync> RelayConnInternal<T> {
     /// see SetDeadline and SetWriteDeadline.
     /// On packet-oriented connections, write timeouts are rare.
     async fn send_to(&mut self, p: &[u8], addr: SocketAddr) -> Result<usize, Error> {
+        // check for errors refreshing allocation or permissions
+        if let Some(e) = self.refresh_error.take() {
+            return Err(e);
+        }
         // check if we have a permission for the destination IP addr
         let perm = if let Some(perm) = self.perm_map.find(&addr) {
             Arc::clone(perm)
@@ -600,8 +606,9 @@ impl<T: RelayConnObserver + Send + Sync> PeriodicTimerTimeoutHandler for RelayCo
                         }
                     }
                 }
-                if result.is_err() {
-                    log::warn!("refresh allocation failed");
+                if let Err(e) = result {
+                    log::error!("refresh allocation failed {}", e);
+                    self.refresh_error = Some(e);
                 }
             }
             TimerIdRefresh::Perms => {
@@ -614,8 +621,9 @@ impl<T: RelayConnObserver + Send + Sync> PeriodicTimerTimeoutHandler for RelayCo
                         }
                     }
                 }
-                if result.is_err() {
-                    log::warn!("refresh permissions failed");
+                if let Err(e) = result {
+                    log::error!("refresh permissions failed {}", e);
+                    self.refresh_error = Some(e);
                 }
             }
         }
